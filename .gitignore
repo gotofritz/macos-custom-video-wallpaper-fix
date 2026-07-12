@@ -1,0 +1,12 @@
+# build output
+encode_temporal
+*.o
+*.dSYM/
+
+# media (don't commit large test videos)
+*.mov
+*.mp4
+*.m4v
+
+# macOS
+.DS_Store
