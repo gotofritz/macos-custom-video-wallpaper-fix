@@ -43,37 +43,64 @@ not Apple's own `avconvert`. You have to drive **VideoToolbox** directly with
 what [`encode_temporal.swift`](encode_temporal.swift) does.
 
 ```bash
-# build (or just run: swiftc -O encode_temporal.swift -o encode_temporal)
-./build.sh
-
-# encode: repeat an 18s clip 17x -> ~5 min, ~12 Mbps (matches Apple's aerials)
-./encode_temporal input.mov output.mov 17 12
-
-# verify the temporal sample groups are present
-python3 groups.py output.mov      # expect: sgpd 'tscl', sgpd 'tsas', csgm 'tscl', csgm 'tsas'
+# one command: download -> cut -> encode with temporal layers -> verify -> install
+./wallpaper make YOUTUBEID WALLPAPER-UUID 00:05 04:29
 ```
 
-Then set `output.mov` as your wallpaper (via VideoPaper, or by replacing the `.mov` the
-aerial system already references). Lock/unlock — it keeps playing. ✅
+Then lock/unlock — it keeps playing. ✅
 
 ## Requirements
 
 - macOS 26 (Tahoe) — developed/tested on 26.4.1 (build 25E253), Apple Silicon.
   The same mechanism exists on Sonoma/Sequoia; adjust as needed.
-- Xcode command-line tools (`swiftc`) — for building the encoder.
-- `python3` — only for the optional `groups.py` verifier.
-- `ffmpeg` — optional, only if you want to loop/pre-process elsewhere.
+- [`uv`](https://docs.astral.sh/uv/) — runs `./wallpaper` and installs its only Python
+  dependency (`yt-dlp`) automatically; there is nothing to `pip install`.
+- `ffmpeg` / `ffprobe` (`brew install ffmpeg`).
+- Xcode command-line tools (`swiftc`). The Swift encoder is compiled automatically the
+  first time it is needed (and again whenever `encode_temporal.swift` changes).
 
 ## Usage
 
+First create the wallpaper entry in System Settings (any video will do) so that
+`~/Library/Application Support/com.apple.wallpaper/aerials/videos/<UUID>.mov` exists.
+`wallpaper` matches that file's resolution and duration and replaces it.
+
 ```
+./wallpaper make YOUTUBEID UUID [--loop] START END [START END ...]
+./wallpaper verify file.mov
+```
+
+```bash
+# one stretch of the video, slowed/sped to fit the wallpaper's duration
+./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 00:05 04:29
+
+# several stretches joined, played at normal speed and repeated to fill the duration
+./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --loop \
+    00:05 00:20  01:10 01:35  04:00 04:29
+```
+
+- `YOUTUBEID` — a video id or a full URL. Downloads are cached in `~/Documents/desktops`
+  (`--cache-dir` to change).
+- `UUID` — the wallpaper to replace; a path ending in `.mov` also works.
+- `START END` — `MM:SS` or `HH:MM:SS` pairs; the pieces are joined in order.
+- `--loop` — keep original speed and repeat the cut until the target duration is filled
+  (the default stretches the cut to the target duration instead).
+- `--bitrate MBPS` — default `12` (Apple's aerials are ~10–12 Mbps 4K).
+- `--reload` — restart `WallpaperAgent` afterwards so the new video is picked up.
+
+The result is verified for the `tscl`/`tsas` sample groups *before* it replaces the
+existing wallpaper, so a failed run never clobbers a working one.
+
+### Using the encoder on its own
+
+```bash
+swiftc -O encode_temporal.swift -o encode_temporal
 ./encode_temporal <input.mov> <output.mov> [loopCount] [bitrateMbps]
 ```
 
-- `input.mov` — your source clip (any codec AVFoundation can read).
 - `loopCount` — repeat the source content back-to-back with continuous timestamps
-  (default `1`). Use this to reach a long duration from a short clip.
-- `bitrateMbps` — average bitrate (default `10`). Apple's aerials are ~10–12 Mbps 4K.
+  (default `1`).
+- `bitrateMbps` — average bitrate (default `10`).
 
 The encoder:
 1. decodes the source with `AVAssetReader` (to 10-bit pixel buffers),
@@ -94,14 +121,17 @@ clips. An ~18 s clip plays, loops once, then freezes (`rate 0.00`, permanent bla
 log shows `Error copying sample buffer. Buffer was nil.` at the loop boundary. Apple's
 built-in aerials are long (~5–8 min) so they essentially never loop during a session.
 
-That's why the encoder has a `loopCount`: make a **long** file (≈5 min is plenty and
-matches Apple) so looping doesn't happen in normal use:
+That's why the encoder has a `loopCount` (and `wallpaper make` matches the duration of the
+wallpaper it replaces): make a **long** file (≈5 min is plenty and matches Apple) so
+looping doesn't happen in normal use:
 
 ```bash
 ./encode_temporal source.mov out.mov 17 12   # 18s x17 ≈ 5 min, ~460 MB
 ```
 
 ## Install as a wallpaper
+
+`./wallpaper make` installs straight into the aerials folder. For a file produced by hand:
 
 **Option A — VideoPaper (or similar helper app):** just import `out.mov`.
 
@@ -116,7 +146,7 @@ pkill -x WallpaperAgent
 ## Verify it worked
 
 ```bash
-python3 groups.py out.mov
+./wallpaper verify out.mov
 # sgpd 'tscl' + sgpd 'tsas' + csgm 'tscl' + csgm 'tsas'  == same as a genuine Apple aerial
 ```
 
@@ -182,9 +212,8 @@ All of these were tried and made **no** difference:
 
 ## Files
 
-- [`encode_temporal.swift`](encode_temporal.swift) — the VideoToolbox temporal-scalability encoder.
-- [`build.sh`](build.sh) — one-line convenience script that compiles `encode_temporal.swift` with `swiftc`.
-- [`groups.py`](groups.py) — dumps a `.mov`'s sample-group boxes to verify `tscl`/`tsas`.
+- [`wallpaper`](wallpaper) — the single entry point (`uv run --script`): download, cut, encode, verify, install.
+- [`encode_temporal.swift`](encode_temporal.swift) — the VideoToolbox temporal-scalability encoder, built on demand by `wallpaper`.
 
 ## License
 
