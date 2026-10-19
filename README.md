@@ -1,4 +1,4 @@
-# Fix: custom video wallpaper goes **black after unlock** on macOS (Sonoma / Sequoia / Tahoe)
+# Wallpaper fix
 
 `./wallpaper` downloads parts of a YouTube video and turns them into a macOS custom video wallpaper that keeps playing after unlock.
 
@@ -49,6 +49,8 @@ The result is verified for the `tscl`/`tsas` sample groups *before* it replaces 
 existing wallpaper, so a failed run never clobbers a working one.
 
 ---
+
+# Fix: custom video wallpaper goes **black after unlock** on macOS (Sonoma / Sequoia / Tahoe)
 
 ## The problem
 
