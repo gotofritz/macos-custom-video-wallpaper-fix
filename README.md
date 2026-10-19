@@ -235,6 +235,13 @@ All of these were tried and made **no** difference:
 - [`wallpaper`](wallpaper) — the single entry point (`uv run --script`): download, cut, encode, verify, install.
 - [`encode_temporal.swift`](encode_temporal.swift) — the VideoToolbox temporal-scalability encoder, built on demand by `wallpaper`.
 
+## Credits
+
+Thank you to Alexis ([AlexisBCD](https://github.com/AlexisBCD)), who tracked down the real
+cause of the black screen, built the VideoToolbox encoder (`encode_temporal.swift`) and
+shared it all openly. The root-cause analysis and the encoder in this repo are their work;
+the `wallpaper` command just wraps them together with the download and cutting steps.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
