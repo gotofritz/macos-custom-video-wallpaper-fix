@@ -1,5 +1,43 @@
 # Fix: custom video wallpaper goes **black after unlock** on macOS (Sonoma / Sequoia / Tahoe)
 
+`./wallpaper` downloads parts of a YouTube video and turns them into a macOS custom video wallpaper that keeps playing after unlock.
+
+## Usage
+
+First create the wallpaper entry in System Settings (any video will do) so that
+`~/Library/Application Support/com.apple.wallpaper/aerials/videos/<UUID>.mov` exists.
+`wallpaper` matches that file's resolution and duration and replaces it.
+
+```
+./wallpaper make YOUTUBEID UUID [--loop] START END [START END ...]
+./wallpaper verify file.mov
+```
+
+```bash
+# one stretch of the video, slowed/sped to fit the wallpaper's duration
+./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 00:05 04:29
+
+# several stretches joined, played at normal speed and repeated to fill the duration
+./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --loop \
+    00:05 00:20  01:10 01:35  04:00 04:29
+```
+
+- `YOUTUBEID` — a video id or a full URL. Downloads are cached in `~/Documents/desktops`
+  (`--cache-dir` to change).
+- `UUID` — the wallpaper to replace; a path ending in `.mov` also works.
+- `START END` — `MM:SS` or `HH:MM:SS` pairs; the pieces are joined in order.
+- `--loop` — keep original speed and repeat the cut until the target duration is filled
+  (the default stretches the cut to the target duration instead).
+- `--bitrate MBPS` — default `12` (Apple's aerials are ~10–12 Mbps 4K).
+- `--reload` — restart `WallpaperAgent` afterwards so the new video is picked up.
+
+The result is verified for the `tscl`/`tsas` sample groups *before* it replaces the
+existing wallpaper, so a failed run never clobbers a working one.
+
+---
+
+## The problem
+
 Turn any video into a **custom aerial / live wallpaper** that keeps playing after you
 unlock your Mac — instead of turning into a **black screen**.
 
@@ -59,39 +97,7 @@ Then lock/unlock — it keeps playing. ✅
 - Xcode command-line tools (`swiftc`). The Swift encoder is compiled automatically the
   first time it is needed (and again whenever `encode_temporal.swift` changes).
 
-## Usage
-
-First create the wallpaper entry in System Settings (any video will do) so that
-`~/Library/Application Support/com.apple.wallpaper/aerials/videos/<UUID>.mov` exists.
-`wallpaper` matches that file's resolution and duration and replaces it.
-
-```
-./wallpaper make YOUTUBEID UUID [--loop] START END [START END ...]
-./wallpaper verify file.mov
-```
-
-```bash
-# one stretch of the video, slowed/sped to fit the wallpaper's duration
-./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 00:05 04:29
-
-# several stretches joined, played at normal speed and repeated to fill the duration
-./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --loop \
-    00:05 00:20  01:10 01:35  04:00 04:29
-```
-
-- `YOUTUBEID` — a video id or a full URL. Downloads are cached in `~/Documents/desktops`
-  (`--cache-dir` to change).
-- `UUID` — the wallpaper to replace; a path ending in `.mov` also works.
-- `START END` — `MM:SS` or `HH:MM:SS` pairs; the pieces are joined in order.
-- `--loop` — keep original speed and repeat the cut until the target duration is filled
-  (the default stretches the cut to the target duration instead).
-- `--bitrate MBPS` — default `12` (Apple's aerials are ~10–12 Mbps 4K).
-- `--reload` — restart `WallpaperAgent` afterwards so the new video is picked up.
-
-The result is verified for the `tscl`/`tsas` sample groups *before* it replaces the
-existing wallpaper, so a failed run never clobbers a working one.
-
-### Using the encoder on its own
+## Using the encoder on its own
 
 ```bash
 swiftc -O encode_temporal.swift -o encode_temporal
