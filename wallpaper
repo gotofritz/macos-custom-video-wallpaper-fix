@@ -119,7 +119,10 @@ def make_parser() -> argparse.ArgumentParser:
 def list_wallpapers() -> None:
     movies = sorted(AERIALS.glob("*.mov")) if AERIALS.is_dir() else []
     if not movies:
-        raise Fail(f"No wallpapers found in {AERIALS}")
+        raise Fail(
+            f"No wallpapers found in {AERIALS}. Open System Settings > Wallpaper and "
+            "select an aerial wallpaper so macOS downloads it."
+        )
     for mov in movies:
         try:
             w, h, dur = probe(mov)
@@ -211,7 +214,7 @@ def probe(path: Path) -> tuple[int, int, float]:
 def resolve_reference(ref: str) -> Path:
     path = Path(ref).expanduser() if ref.endswith(".mov") else AERIALS / f"{ref}.mov"
     if not path.is_file():
-        raise Fail(f"Target wallpaper does not exist: {path}")
+        raise Fail(f"Target wallpaper does not exist: {path} (see `./wallpaper list`)")
     return path
 
 
