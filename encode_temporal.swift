@@ -16,14 +16,18 @@ let asset = AVURLAsset(url: inURL)
 var vtrack: AVAssetTrack!
 var natSize = CGSize.zero; var nomFps: Float = 24; var clipDur = CMTime.zero
 let sem = DispatchSemaphore(value: 0)
+var loadError: Error?
 Task {
-    vtrack = try await asset.loadTracks(withMediaType: .video).first
-    natSize = try await vtrack.load(.naturalSize)
-    nomFps = try await vtrack.load(.nominalFrameRate)
-    clipDur = try await asset.load(.duration)
-    sem.signal()
+    defer { sem.signal() }
+    do {
+        vtrack = try await asset.loadTracks(withMediaType: .video).first
+        natSize = try await vtrack.load(.naturalSize)
+        nomFps = try await vtrack.load(.nominalFrameRate)
+        clipDur = try await asset.load(.duration)
+    } catch { loadError = error }
 }
 sem.wait()
+if let e = loadError { fatalError("could not read \(inURL.path): \(e)") }
 guard let vtrack = vtrack else { fatalError("no video track") }
 let W = Int(natSize.width), H = Int(natSize.height)
 if nomFps < 1 { nomFps = 24 }

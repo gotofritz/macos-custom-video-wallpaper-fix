@@ -1,0 +1,348 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["yt-dlp"]
+# ///
+"""Turn bits of a YouTube video into a macOS custom video wallpaper.
+
+Pipeline:
+  yt-dlp (download) -> ffmpeg (cut, join, scale/crop to the target wallpaper)
+  -> encode_temporal (HEVC with temporal sub-layers, see README)
+  -> verify tscl/tsas sample groups -> install over the wallpaper's .mov
+
+Examples:
+  ./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 00:05 04:29
+
+  ./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --loop \\
+      00:05 00:20  01:10 01:35  04:00 04:29
+
+  ./wallpaper list
+  ./wallpaper verify some.mov
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SWIFT_SRC = HERE / "encode_temporal.swift"
+ENCODER = HERE / "encode_temporal"
+AERIALS = Path.home() / "Library/Application Support/com.apple.wallpaper/aerials/videos"
+DEFAULT_CACHE = Path.home() / "Documents/desktops"
+FPS = 30
+REQUIRED_GROUPS = {"tscl", "tsas"}
+
+
+class Fail(Exception):
+    pass
+
+
+def log(msg: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run([str(c) for c in cmd], check=True, **kw)
+    except FileNotFoundError:
+        raise Fail(f"Required command not found: {cmd[0]}")
+    except subprocess.CalledProcessError as e:
+        raise Fail(f"{cmd[0]} failed (exit {e.returncode})")
+
+
+# ------------------------------------------------------------
+# Arguments
+# ------------------------------------------------------------
+
+TIME_RE = re.compile(r"^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$")
+
+
+def parse_time(text: str) -> float:
+    """MM:SS or HH:MM:SS, seconds may be fractional."""
+    m = TIME_RE.match(text)
+    if not m:
+        raise Fail(f"Invalid time: {text} (use MM:SS or HH:MM:SS)")
+    h, mi, s = int(m[1] or 0), int(m[2]), float(m[3])
+    if s >= 60 or (m[1] is not None and mi >= 60):
+        raise Fail(f"Invalid time: {text}")
+    return h * 3600 + mi * 60 + s
+
+
+def video_id(arg: str) -> str:
+    """Accept a bare id or a youtube URL."""
+    m = re.search(r"(?:v=|youtu\.be/|shorts/)([\w-]{11})", arg)
+    return m[1] if m else arg
+
+
+def parse_segments(times: list[str]) -> list[tuple[float, float]]:
+    if len(times) < 2 or len(times) % 2:
+        raise Fail("START/END arguments must be supplied in pairs.")
+    segments = []
+    for start, end in zip(times[::2], times[1::2]):
+        s, e = parse_time(start), parse_time(end)
+        if e <= s:
+            raise Fail(f"END ({end}) must be after START ({start}).")
+        segments.append((s, e))
+    return segments
+
+
+def make_parser() -> argparse.ArgumentParser:
+    m = argparse.ArgumentParser(prog="wallpaper make", description="download, cut, encode and install a wallpaper")
+    m.add_argument("youtube", help="YouTube video id or URL")
+    m.add_argument(
+        "reference",
+        help="UUID of an existing wallpaper in the aerials folder (its size and "
+        "duration are matched), or a path to a .mov",
+    )
+    m.add_argument("times", nargs="+", metavar="START END", help="MM:SS or HH:MM:SS pairs")
+    m.add_argument(
+        "--loop",
+        action="store_true",
+        help="keep original speed and repeat the cut to fill the target duration "
+        "(default: stretch the cut to the target duration)",
+    )
+    m.add_argument("--bitrate", type=int, default=12, metavar="MBPS", help="default: 12")
+    m.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE, help=f"downloads; default: {DEFAULT_CACHE}")
+    m.add_argument("--reload", action="store_true", help="restart WallpaperAgent when done")
+    return m
+
+
+def list_wallpapers() -> None:
+    movies = sorted(AERIALS.glob("*.mov")) if AERIALS.is_dir() else []
+    if not movies:
+        raise Fail(
+            f"No wallpapers found in {AERIALS}. Open System Settings > Wallpaper and "
+            "select an aerial wallpaper so macOS downloads it."
+        )
+    for mov in movies:
+        try:
+            w, h, dur = probe(mov)
+            info = f"{w}x{h}  {dur:7.1f}s"
+        except Fail:
+            info = "(unreadable)"
+        modified = time.strftime("%Y-%m-%d %H:%M", time.localtime(mov.stat().st_mtime))
+        print(f"{mov.stem}  {info}  {modified}")
+
+
+def verify_parser() -> argparse.ArgumentParser:
+    v = argparse.ArgumentParser(prog="wallpaper verify", description="check a .mov has the temporal sample groups")
+    v.add_argument("movie", type=Path)
+    return v
+
+
+# ------------------------------------------------------------
+# Verification (formerly groups.py)
+# ------------------------------------------------------------
+
+
+def _boxes(buf: bytes, start: int, end: int):
+    pos = start
+    while pos + 8 <= end:
+        size, kind = struct.unpack(">I4s", buf[pos : pos + 8])
+        header = 8
+        if size == 1:
+            size = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0]
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header:
+            return
+        yield kind.decode("latin1"), pos, size, header
+        pos += size
+
+
+def sample_groups(path: Path) -> set[tuple[str, str]]:
+    """Return {(box, grouping_type)} for sgpd/sbgp/csgm boxes in the video track's stbl."""
+    buf = path.read_bytes()
+
+    def child(name: str, start: int, end: int):
+        return next(((p, s, h) for k, p, s, h in _boxes(buf, start, end) if k == name), None)
+
+    span = (0, len(buf))
+    for name in ("moov", "trak", "mdia", "minf", "stbl"):
+        hit = child(name, *span)
+        if not hit:
+            raise Fail(f"{path.name}: no '{name}' box; not a usable movie")
+        pos, size, header = hit
+        span = (pos + header, pos + size)
+
+    found = set()
+    for kind, pos, _, _ in _boxes(buf, *span):
+        if kind in ("sgpd", "sbgp", "csgm"):
+            found.add((kind, buf[pos + 12 : pos + 16].decode("latin1", "replace")))
+    return found
+
+
+def verify(path: Path) -> None:
+    found = sample_groups(path)
+    for kind, grouping in sorted(found):
+        log(f"  [{kind}] grouping_type='{grouping}'")
+    missing = REQUIRED_GROUPS - {g for k, g in found if k == "sgpd"}
+    if missing:
+        raise Fail(f"{path.name} lacks sample groups {sorted(missing)}; macOS will show black")
+    log(f"{path.name}: temporal sample groups present")
+
+
+# ------------------------------------------------------------
+# Steps
+# ------------------------------------------------------------
+
+
+def probe(path: Path) -> tuple[int, int, float]:
+    out = run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height:format=duration",
+         "-of", "csv=p=0:s=,", path],
+        capture_output=True, text=True,
+    ).stdout.split()
+    try:
+        w, h = (int(x) for x in out[0].split(","))
+        return w, h, float(out[1])
+    except (IndexError, ValueError):
+        raise Fail(f"Could not read size/duration of {path}")
+
+
+def resolve_reference(ref: str) -> Path:
+    path = Path(ref).expanduser() if ref.endswith(".mov") else AERIALS / f"{ref}.mov"
+    if not path.is_file():
+        raise Fail(f"Target wallpaper does not exist: {path} (see `./wallpaper list`)")
+    return path
+
+
+def download(vid: str, cache: Path) -> Path:
+    cache.mkdir(parents=True, exist_ok=True)
+    existing = sorted(cache.glob(f"{vid}.mp4"))
+    if existing:
+        log(f"Using existing source file: {existing[0]}")
+        return existing[0]
+    log(f"Downloading source video: {vid}")
+    run([sys.executable, "-m", "yt_dlp",
+         "--min-sleep-interval", "60", "--max-sleep-interval", "90",
+         "--no-progress", "-t", "mp4",
+         "-o", cache / f"{vid}.%(ext)s", "--", vid])
+    src = cache / f"{vid}.mp4"
+    if not src.is_file():
+        raise Fail(f"Source MP4 not found: {src}")
+    return src
+
+
+def build_encoder() -> Path:
+    if shutil.which("swiftc") is None:
+        raise Fail("swiftc not found; install the Xcode command line tools (xcode-select --install)")
+    if not ENCODER.exists() or ENCODER.stat().st_mtime < SWIFT_SRC.stat().st_mtime:
+        log("Building encode_temporal...")
+        # The AVFoundation deprecation warnings (macOS 27 replacement APIs don't
+        # exist on older systems) are noise; only show compiler output on failure.
+        r = subprocess.run(["swiftc", "-O", SWIFT_SRC, "-o", ENCODER], capture_output=True, text=True)
+        if r.returncode:
+            print(r.stderr, file=sys.stderr)
+            raise Fail(f"swiftc failed (exit {r.returncode})")
+    return ENCODER
+
+
+def cut_and_join(src: Path, segments, work: Path, w: int, h: int, stretch: float | None) -> Path:
+    clips = []
+    for i, (s, e) in enumerate(segments):
+        log(f"Extracting segment {i + 1}: {s:g}s -> {e:g}s")
+        clip = work / f"clip_{i}.mov"
+        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-ss", f"{s}", "-i", src, "-t", f"{e - s}",
+             "-map", "0:v:0", "-an", "-vf", "setpts=PTS-STARTPTS",
+             "-c:v", "prores_ks", clip])
+        clips.append(clip)
+
+    concat = work / "concat.txt"
+    concat.write_text("".join(f"file '{c}'\n" for c in clips))
+
+    scale = f"scale=iw*max({w}/iw\\,{h}/ih):ih*max({w}/iw\\,{h}/ih),crop={w}:{h}"
+    vf = f"{scale},format=yuv422p10le"
+    if stretch:
+        vf += f",setpts={stretch}*PTS"
+    vf += f",fps={FPS}"
+
+    log("Assembling intermediate movie...")
+    joined = work / "joined.mov"
+    run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "concat", "-safe", "0", "-i", concat,
+         "-map", "0:v:0", "-an", "-vf", vf,
+         "-c:v", "prores_ks", "-profile:v", "3", joined])
+    return joined
+
+
+def make(args: argparse.Namespace) -> None:
+    vid = video_id(args.youtube)
+    segments = parse_segments(args.times)
+    source_dur = sum(e - s for s, e in segments)
+
+    for cmd in ("ffmpeg", "ffprobe"):
+        if shutil.which(cmd) is None:
+            raise Fail(f"Required command not found: {cmd}")
+
+    target = resolve_reference(args.reference)
+    w, h, target_dur = probe(target)
+    if target_dur <= 0:
+        raise Fail(f"Target duration is not positive: {target_dur}")
+    log(f"Target: {target} ({w}x{h}, {target_dur:.1f}s)")
+    log(f"Source duration total: {source_dur:g}s; mode: {'loop' if args.loop else 'stretch'}")
+
+    src = download(vid, args.cache_dir)
+    encoder = build_encoder()
+
+    with tempfile.TemporaryDirectory(prefix="wallpaper.") as tmp:
+        work = Path(tmp)
+        stretch = None if args.loop else target_dur / source_dur
+        joined = cut_and_join(src, segments, work, w, h, stretch)
+
+        loops = math.ceil(target_dur / source_dur) if args.loop else 1
+        log(f"Encoding HEVC Main 10 with temporal layers (x{loops}, {args.bitrate} Mbps)...")
+        encoded = work / "encoded.mov"
+        run([encoder, joined, encoded, loops, args.bitrate])
+
+        log("Verifying output...")
+        verify(encoded)
+
+        # Move into place only after everything succeeded, so a failure
+        # never clobbers the existing wallpaper.
+        staged = target.with_name(target.name + ".new")
+        shutil.copyfile(encoded, staged)
+        staged.replace(target)
+
+    log(f"Installed: {target}")
+    if args.reload:
+        subprocess.run(["pkill", "-x", "WallpaperAgent"])
+        log("Restarted WallpaperAgent")
+    else:
+        log("Run `pkill -x WallpaperAgent` (or re-run with --reload) to pick it up.")
+
+
+def main() -> int:
+    cmd, rest = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
+    if cmd not in ("make", "verify", "list"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        if cmd == "list":
+            list_wallpapers()
+        elif cmd == "verify":
+            verify(verify_parser().parse_args(rest).movie)
+        else:
+            make(make_parser().parse_intermixed_args(rest))
+    except Fail as e:
+        log(f"ERROR: {e}")
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
