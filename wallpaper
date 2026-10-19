@@ -207,7 +207,9 @@ def download(vid: str, cache: Path) -> Path:
         log(f"Using existing source file: {existing[0]}")
         return existing[0]
     log(f"Downloading source video: {vid}")
-    run([sys.executable, "-m", "yt_dlp", "--no-progress", "-t", "mp4",
+    run([sys.executable, "-m", "yt_dlp",
+         "--min-sleep-interval", "60", "--max-sleep-interval", "90",
+         "--no-progress", "-t", "mp4",
          "-o", cache / f"{vid}.%(ext)s", "--", vid])
     src = cache / f"{vid}.mp4"
     if not src.is_file():
