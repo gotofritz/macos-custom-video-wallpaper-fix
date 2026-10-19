@@ -4,12 +4,24 @@
 
 ## Usage
 
-First create the wallpaper entry in System Settings (any video will do) so that
-`~/Library/Application Support/com.apple.wallpaper/aerials/videos/<UUID>.mov` exists.
-`wallpaper` matches that file's resolution and duration and replaces it.
+`wallpaper` replaces an existing wallpaper video, so you need one to start from: a custom
+video wallpaper already added to macOS (for example imported with VideoPaper), stored as
+`~/Library/Application Support/com.apple.wallpaper/aerials/videos/<UUID>.mov`. Its
+resolution and duration are what the new video is made to match.
+
+Find the `<UUID>` with:
+
+```bash
+./wallpaper list
+# 4C108785-A7BA-422E-9C79-B0129F1D5550  3840x2160    300.0s  2026-10-19 21:05
+```
+
+The most recently modified entry is usually the one you just added. If you have several,
+tell them apart by size and duration.
 
 ```
 ./wallpaper make YOUTUBEID UUID [--loop] START END [START END ...]
+./wallpaper list
 ./wallpaper verify file.mov
 ```
 
