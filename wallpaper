@@ -222,7 +222,12 @@ def build_encoder() -> Path:
         raise Fail("swiftc not found; install the Xcode command line tools (xcode-select --install)")
     if not ENCODER.exists() or ENCODER.stat().st_mtime < SWIFT_SRC.stat().st_mtime:
         log("Building encode_temporal...")
-        run(["swiftc", "-O", SWIFT_SRC, "-o", ENCODER])
+        # The AVFoundation deprecation warnings (macOS 27 replacement APIs don't
+        # exist on older systems) are noise; only show compiler output on failure.
+        r = subprocess.run(["swiftc", "-O", SWIFT_SRC, "-o", ENCODER], capture_output=True, text=True)
+        if r.returncode:
+            print(r.stderr, file=sys.stderr)
+            raise Fail(f"swiftc failed (exit {r.returncode})")
     return ENCODER
 
 
