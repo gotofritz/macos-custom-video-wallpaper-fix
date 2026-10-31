@@ -11,10 +11,10 @@ Pipeline:
   -> verify tscl/tsas sample groups -> install over the wallpaper's .mov
 
 Examples:
-  ./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 00:05 04:29
-
-  ./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --loop \\
+  ./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 \\
       00:05 00:20  01:10 01:35  04:00 04:29
+
+  ./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --stretch 00:05 04:29
 
   ./wallpaper list
   ./wallpaper verify some.mov
@@ -104,11 +104,17 @@ def make_parser() -> argparse.ArgumentParser:
         "duration are matched), or a path to a .mov",
     )
     m.add_argument("times", nargs="+", metavar="START END", help="MM:SS or HH:MM:SS pairs")
-    m.add_argument(
+    mode = m.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--stretch",
+        action="store_true",
+        help="slow down / speed up the cut to fit the target duration "
+        "(default: keep original speed and repeat the cut to fill the target duration)",
+    )
+    mode.add_argument(
         "--loop",
         action="store_true",
-        help="keep original speed and repeat the cut to fill the target duration "
-        "(default: stretch the cut to the target duration)",
+        help="legacy flag; looping is now the default, so this has no effect",
     )
     m.add_argument("--bitrate", type=int, default=12, metavar="MBPS", help="default: 12")
     m.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE, help=f"downloads; default: {DEFAULT_CACHE}")
@@ -291,17 +297,17 @@ def make(args: argparse.Namespace) -> None:
     if target_dur <= 0:
         raise Fail(f"Target duration is not positive: {target_dur}")
     log(f"Target: {target} ({w}x{h}, {target_dur:.1f}s)")
-    log(f"Source duration total: {source_dur:g}s; mode: {'loop' if args.loop else 'stretch'}")
+    log(f"Source duration total: {source_dur:g}s; mode: {'stretch' if args.stretch else 'loop'}")
 
     src = download(vid, args.cache_dir)
     encoder = build_encoder()
 
     with tempfile.TemporaryDirectory(prefix="wallpaper.") as tmp:
         work = Path(tmp)
-        stretch = None if args.loop else target_dur / source_dur
+        stretch = target_dur / source_dur if args.stretch else None
         joined = cut_and_join(src, segments, work, w, h, stretch)
 
-        loops = math.ceil(target_dur / source_dur) if args.loop else 1
+        loops = 1 if args.stretch else math.ceil(target_dur / source_dur)
         log(f"Encoding HEVC Main 10 with temporal layers (x{loops}, {args.bitrate} Mbps)...")
         encoded = work / "encoded.mov"
         run([encoder, joined, encoded, loops, args.bitrate])
