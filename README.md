@@ -22,26 +22,28 @@ several, tell them apart by size and duration. If the list is empty, select an a
 System Settings first.
 
 ```
-./wallpaper make YOUTUBEID UUID [--loop] START END [START END ...]
+./wallpaper make YOUTUBEID UUID [--stretch] START END [START END ...]
 ./wallpaper list
 ./wallpaper verify file.mov
 ```
 
 ```bash
-# one stretch of the video, slowed/sped to fit the wallpaper's duration
-./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 00:05 04:29
-
-# several stretches joined, played at normal speed and repeated to fill the duration
-./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --loop \
+# several pieces joined, played at normal speed and repeated to fill the duration
+./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 \
     00:05 00:20  01:10 01:35  04:00 04:29
+
+# one piece of the video, slowed/sped to fit the wallpaper's duration
+./wallpaper make rVyQHMVhkrE 4C108785-A7BA-422E-9C79-B0129F1D5550 --stretch 00:05 04:29
 ```
 
 - `YOUTUBEID` — a video id or a full URL. Downloads are cached in `~/Documents/desktops`
   (`--cache-dir` to change).
 - `UUID` — the wallpaper to replace; a path ending in `.mov` also works.
 - `START END` — `MM:SS` or `HH:MM:SS` pairs; the pieces are joined in order.
-- `--loop` — keep original speed and repeat the cut until the target duration is filled
-  (the default stretches the cut to the target duration instead).
+- `--stretch` — slow down / speed up the cut to fit the target duration (the default keeps
+  the original speed and repeats the cut until the target duration is filled).
+- `--loop` — accepted for backwards compatibility; looping is now the default, so it has
+  no effect.
 - `--bitrate MBPS` — default `12` (Apple's aerials are ~10–12 Mbps 4K).
 
 The result is verified for the `tscl`/`tsas` sample groups *before* it replaces the
